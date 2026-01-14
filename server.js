@@ -16,22 +16,22 @@ app.use(
     origin: (origin, callback) => {
       // Allow requests with no origin (like mobile apps or curl)
       if (!origin) return callback(null, true);
-      
+
       // Allow localhost:3001 for local development
       if (origin === "http://localhost:3001") {
         return callback(null, true);
       }
-      
+
       // Allow any Vercel preview/production domain
       if (origin.endsWith(".vercel.app")) {
         return callback(null, true);
       }
-      
+
       // Allow explicitly listed origins
       if (allowedOrigins.includes(origin)) {
         return callback(null, true);
       }
-      
+
       return callback(new Error("Not allowed by CORS"));
     },
   })
@@ -74,7 +74,6 @@ app.post("/api/sync", requireAdmin, async (req, res) => {
       success: false,
       error: err.message,
     };
-    // Only include details in non-production
     if (process.env.NODE_ENV !== "production") {
       response.details = err.response?.data || null;
     }
@@ -82,7 +81,6 @@ app.post("/api/sync", requireAdmin, async (req, res) => {
   }
 });
 
-// Get all articles (with pagination)
 // Get all articles (with pagination)
 app.get("/api/articles", async (req, res) => {
   const page = parseInt(req.query.page) || 1;
@@ -120,7 +118,7 @@ app.get("/api/articles", async (req, res) => {
     }
   }
 
-  // Normal pagination logic
+  // Get total count
   db.get("SELECT COUNT(*) as total FROM articles", (err, countResult) => {
     if (err) {
       res.status(500).json({ error: "Database error" });
@@ -130,11 +128,9 @@ app.get("/api/articles", async (req, res) => {
     const total = countResult.total;
     const totalPages = Math.ceil(total / limit);
 
+    // Get paginated articles
     db.all(
-      `SELECT id, headline, image_url, published_at
-       FROM articles
-       ORDER BY published_at DESC
-       LIMIT ? OFFSET ?`,
+      "SELECT id, headline, image_url, published_at FROM articles ORDER BY published_at DESC LIMIT ? OFFSET ?",
       [limit, offset],
       (err, rows) => {
         if (err) {
@@ -148,40 +144,6 @@ app.get("/api/articles", async (req, res) => {
           limit,
           total,
           totalPages,
-        });
-      }
-    );
-  });
-});
-
-  // First get total count
-  db.get("SELECT COUNT(*) as total FROM articles", (err, countResult) => {
-    if (err) {
-      res.status(500).json({ error: "Database error" });
-      return;
-    }
-
-    const total = countResult.total;
-    const totalPages = Math.ceil(total / limit);
-
-    // Then get paginated articles
-    db.all(
-      `SELECT id, headline, image_url, published_at 
-       FROM articles 
-       ORDER BY published_at DESC
-       LIMIT ? OFFSET ?`,
-      [limit, offset],
-      (err, rows) => {
-        if (err) {
-          res.status(500).json({ error: "Database error" });
-          return;
-        }
-        res.json({
-          items: rows,
-          page,
-          limit,
-          total,
-          totalPages
         });
       }
     );
@@ -210,6 +172,6 @@ app.get("/api/articles/:id", (req, res) => {
 const PORT = process.env.PORT || 3000;
 
 app.listen(PORT, () => {
-  console.log(`API running on port ${PORT}`);
-  console.log(`CORS allowed origins: ${allowedOrigins.join(", ")}`);
+  console.log("API running on port " + PORT);
+  console.log("CORS allowed origins: " + allowedOrigins.join(", "));
 });
