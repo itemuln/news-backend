@@ -38,6 +38,10 @@ app.use(
 );
 app.use(express.json());
 
+// Auto-sync flag (runs once per instance if DB is empty)
+let initialSyncDone = false;
+let initialSyncInProgress = false;
+
 // Admin token auth middleware
 const requireAdmin = (req, res, next) => {
   const token = req.headers["x-admin-token"];
@@ -79,10 +83,76 @@ app.post("/api/sync", requireAdmin, async (req, res) => {
 });
 
 // Get all articles (with pagination)
-app.get("/api/articles", (req, res) => {
+// Get all articles (with pagination)
+app.get("/api/articles", async (req, res) => {
   const page = parseInt(req.query.page) || 1;
   const limit = parseInt(req.query.limit) || 10;
   const offset = (page - 1) * limit;
+
+  // Auto-sync on first request if DB is empty (runs once per instance)
+  if (!initialSyncDone && !initialSyncInProgress) {
+    try {
+      const countCheck = await new Promise((resolve, reject) => {
+        db.get("SELECT COUNT(*) as total FROM articles", (err, row) => {
+          if (err) reject(err);
+          else resolve(row);
+        });
+      });
+
+      if (countCheck.total === 0) {
+        console.log("Database empty, running initial sync...");
+        initialSyncInProgress = true;
+
+        try {
+          await syncPosts();
+          console.log("Initial sync complete");
+        } catch (syncErr) {
+          console.error("Initial sync failed:", syncErr.message);
+        }
+
+        initialSyncInProgress = false;
+        initialSyncDone = true;
+      } else {
+        initialSyncDone = true;
+      }
+    } catch (err) {
+      console.error("Error checking article count:", err.message);
+    }
+  }
+
+  // Normal pagination logic
+  db.get("SELECT COUNT(*) as total FROM articles", (err, countResult) => {
+    if (err) {
+      res.status(500).json({ error: "Database error" });
+      return;
+    }
+
+    const total = countResult.total;
+    const totalPages = Math.ceil(total / limit);
+
+    db.all(
+      `SELECT id, headline, image_url, published_at
+       FROM articles
+       ORDER BY published_at DESC
+       LIMIT ? OFFSET ?`,
+      [limit, offset],
+      (err, rows) => {
+        if (err) {
+          res.status(500).json({ error: "Database error" });
+          return;
+        }
+
+        res.json({
+          items: rows,
+          page,
+          limit,
+          total,
+          totalPages,
+        });
+      }
+    );
+  });
+});
 
   // First get total count
   db.get("SELECT COUNT(*) as total FROM articles", (err, countResult) => {
