@@ -9,16 +9,29 @@ const app = express();
 // CORS configuration
 const allowedOrigins = process.env.CORS_ORIGINS
   ? process.env.CORS_ORIGINS.split(",").map((o) => o.trim())
-  : ["http://localhost:3001"];
+  : [];
 
 app.use(
   cors({
     origin: (origin, callback) => {
       // Allow requests with no origin (like mobile apps or curl)
       if (!origin) return callback(null, true);
+      
+      // Allow localhost:3001 for local development
+      if (origin === "http://localhost:3001") {
+        return callback(null, true);
+      }
+      
+      // Allow any Vercel preview/production domain
+      if (origin.endsWith(".vercel.app")) {
+        return callback(null, true);
+      }
+      
+      // Allow explicitly listed origins
       if (allowedOrigins.includes(origin)) {
         return callback(null, true);
       }
+      
       return callback(new Error("Not allowed by CORS"));
     },
   })

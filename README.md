@@ -63,8 +63,21 @@ npm run sync
 | `FB_PAGE_ID` | `221114308769986` | Your Facebook Page ID |
 | `FB_PAGE_TOKEN` | `EAAU...` | Facebook Page Access Token |
 | `ADMIN_TOKEN` | (generate a random string) | Secret token for sync endpoint |
-| `CORS_ORIGINS` | `https://your-frontend.com` | Comma-separated allowed origins |
+| `CORS_ORIGINS` | `https://news-frontend.vercel.app` | Additional allowed origins (comma-separated) |
 | `NODE_ENV` | `production` | Set to production for security |
+
+### CORS Configuration
+
+The backend automatically allows:
+- `http://localhost:3001` (local development)
+- Any origin ending with `.vercel.app` (Vercel preview & production)
+- Origins explicitly listed in `CORS_ORIGINS`
+
+If your frontend is on a custom domain, add it to `CORS_ORIGINS`:
+
+```
+CORS_ORIGINS=https://news.example.com,https://staging.example.com
+```
 
 ### 3. Attach Persistent Disk
 
