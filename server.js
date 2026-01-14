@@ -1,12 +1,69 @@
+require("dotenv").config();
 const express = require("express");
-const sqlite3 = require("sqlite3").verbose();
 const cors = require("cors");
+const db = require("./db");
+const { syncPosts } = require("./sync");
 
 const app = express();
-const db = new sqlite3.Database("./news.db");
 
-app.use(cors());
+// CORS configuration
+const allowedOrigins = process.env.CORS_ORIGINS
+  ? process.env.CORS_ORIGINS.split(",").map((o) => o.trim())
+  : ["http://localhost:3001"];
+
+app.use(
+  cors({
+    origin: (origin, callback) => {
+      // Allow requests with no origin (like mobile apps or curl)
+      if (!origin) return callback(null, true);
+      if (allowedOrigins.includes(origin)) {
+        return callback(null, true);
+      }
+      return callback(new Error("Not allowed by CORS"));
+    },
+  })
+);
 app.use(express.json());
+
+// Admin token auth middleware
+const requireAdmin = (req, res, next) => {
+  const token = req.headers["x-admin-token"];
+  const adminToken = process.env.ADMIN_TOKEN;
+
+  if (!adminToken) {
+    return res.status(500).json({ error: "ADMIN_TOKEN not configured" });
+  }
+
+  if (token !== adminToken) {
+    return res.status(401).json({ error: "Unauthorized" });
+  }
+
+  next();
+};
+
+// Health check endpoint
+app.get("/api/health", (req, res) => {
+  res.json({ status: "ok", timestamp: new Date().toISOString() });
+});
+
+// Manual sync endpoint (protected)
+app.post("/api/sync", requireAdmin, async (req, res) => {
+  try {
+    const result = await syncPosts();
+    res.json({ success: true, ...result });
+  } catch (err) {
+    console.error("Sync failed:", err.message);
+    const response = {
+      success: false,
+      error: err.message,
+    };
+    // Only include details in non-production
+    if (process.env.NODE_ENV !== "production") {
+      response.details = err.response?.data || null;
+    }
+    res.status(500).json(response);
+  }
+});
 
 // Get all articles (with pagination)
 app.get("/api/articles", (req, res) => {
@@ -54,6 +111,10 @@ app.get("/api/articles/:id", (req, res) => {
     "SELECT * FROM articles WHERE id = ?",
     [req.params.id],
     (err, row) => {
+      if (err) {
+        res.status(500).json({ error: "Database error" });
+        return;
+      }
       if (!row) {
         res.status(404).json({ error: "Not found" });
         return;
@@ -67,4 +128,5 @@ const PORT = process.env.PORT || 3000;
 
 app.listen(PORT, () => {
   console.log(`API running on port ${PORT}`);
+  console.log(`CORS allowed origins: ${allowedOrigins.join(", ")}`);
 });

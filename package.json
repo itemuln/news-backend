@@ -1,10 +1,11 @@
 {
   "name": "news-backend",
   "version": "1.0.0",
-  "description": "",
+  "description": "MKOR News Backend - Facebook to News API",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
+    "sync": "node fetchPosts.js",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [],
@@ -12,11 +13,10 @@
   "license": "ISC",
   "type": "commonjs",
   "dependencies": {
-    "axios": "^1.13.2",
+    "axios": "^1.7.9",
     "cors": "^2.8.5",
-    "dotenv": "^17.2.3",
-    "express": "^5.2.1",
-    "node-cron": "^4.2.1",
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2",
     "sqlite3": "^5.1.7"
   }
 }
