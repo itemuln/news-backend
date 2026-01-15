@@ -38,9 +38,8 @@ app.use(
 );
 app.use(express.json());
 
-// Auto-sync flag (runs once per instance if DB is empty)
-let initialSyncDone = false;
-let initialSyncInProgress = false;
+// Auto-sync state (runs once per instance if DB is empty)
+let initialSyncPromise = null;
 
 // Admin token auth middleware
 const requireAdmin = (req, res, next) => {
@@ -57,6 +56,39 @@ const requireAdmin = (req, res, next) => {
 
   next();
 };
+
+// Helper: ensure initial sync is done (all callers await the same promise)
+async function ensureInitialSync() {
+  // If sync already completed or in progress, return existing promise
+  if (initialSyncPromise !== null) {
+    return initialSyncPromise;
+  }
+
+  // Check if DB is empty
+  const countCheck = await new Promise((resolve, reject) => {
+    db.get("SELECT COUNT(*) as total FROM articles", (err, row) => {
+      if (err) reject(err);
+      else resolve(row);
+    });
+  });
+
+  if (countCheck.total === 0) {
+    console.log("Database empty, running initial sync...");
+    // Create and store promise so concurrent requests wait on the same sync
+    initialSyncPromise = syncPosts()
+      .then((result) => {
+        console.log("Initial sync complete:", result);
+      })
+      .catch((err) => {
+        console.error("Initial sync failed:", err.message);
+      });
+    return initialSyncPromise;
+  } else {
+    // DB not empty, mark as done with resolved promise
+    initialSyncPromise = Promise.resolve();
+    return initialSyncPromise;
+  }
+}
 
 // Health check endpoint
 app.get("/api/health", (req, res) => {
@@ -87,35 +119,11 @@ app.get("/api/articles", async (req, res) => {
   const limit = parseInt(req.query.limit) || 10;
   const offset = (page - 1) * limit;
 
-  // Auto-sync on first request if DB is empty (runs once per instance)
-  if (!initialSyncDone && !initialSyncInProgress) {
-    try {
-      const countCheck = await new Promise((resolve, reject) => {
-        db.get("SELECT COUNT(*) as total FROM articles", (err, row) => {
-          if (err) reject(err);
-          else resolve(row);
-        });
-      });
-
-      if (countCheck.total === 0) {
-        console.log("Database empty, running initial sync...");
-        initialSyncInProgress = true;
-
-        try {
-          await syncPosts();
-          console.log("Initial sync complete");
-        } catch (syncErr) {
-          console.error("Initial sync failed:", syncErr.message);
-        }
-
-        initialSyncInProgress = false;
-        initialSyncDone = true;
-      } else {
-        initialSyncDone = true;
-      }
-    } catch (err) {
-      console.error("Error checking article count:", err.message);
-    }
+  try {
+    // Wait for initial sync to complete (all requests wait on same promise)
+    await ensureInitialSync();
+  } catch (err) {
+    console.error("Error during initial sync check:", err.message);
   }
 
   // Get total count
