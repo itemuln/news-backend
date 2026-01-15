@@ -136,9 +136,9 @@ app.get("/api/articles", async (req, res) => {
     const total = countResult.total;
     const totalPages = Math.ceil(total / limit);
 
-    // Get paginated articles
+    // Get paginated articles (include fb_post_id for stable links)
     db.all(
-      "SELECT id, headline, image_url, published_at FROM articles ORDER BY published_at DESC LIMIT ? OFFSET ?",
+      "SELECT id, fb_post_id, headline, image_url, published_at FROM articles ORDER BY published_at DESC LIMIT ? OFFSET ?",
       [limit, offset],
       (err, rows) => {
         if (err) {
@@ -158,11 +158,11 @@ app.get("/api/articles", async (req, res) => {
   });
 });
 
-// Get single article
-app.get("/api/articles/:id", (req, res) => {
+// Get single article by fb_post_id (stable identifier)
+app.get("/api/articles/by-fb/:fb_post_id", (req, res) => {
   db.get(
-    "SELECT * FROM articles WHERE id = ?",
-    [req.params.id],
+    "SELECT * FROM articles WHERE fb_post_id = ?",
+    [req.params.fb_post_id],
     (err, row) => {
       if (err) {
         res.status(500).json({ error: "Database error" });
