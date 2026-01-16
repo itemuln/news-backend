@@ -17,8 +17,8 @@ app.use(
       // Allow requests with no origin (like mobile apps or curl)
       if (!origin) return callback(null, true);
 
-      // Allow localhost:3001 for local development
-      if (origin === "http://localhost:3001") {
+      // Allow localhost for local development (any port)
+      if (origin.startsWith("http://localhost:")) {
         return callback(null, true);
       }
 

@@ -46,7 +46,18 @@ async function syncPosts() {
       continue;
     }
 
-    const headline = lines[0];
+    // Get headline: first line, or first sentence if line is too long
+    let headline = lines[0];
+    
+    // If first line has a period and is long, use first sentence as headline
+    if (headline.includes(".") && headline.length > 100) {
+      const firstSentence = headline.split(".")[0];
+      if (firstSentence.length >= 20) {
+        headline = firstSentence + ".";
+      }
+    }
+    
+    // Build body from remaining content
     let body = lines.slice(1).join("\n");
 
     // Remove ads / separators if present
