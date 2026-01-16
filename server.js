@@ -38,8 +38,11 @@ app.use(
 );
 app.use(express.json());
 
-// Auto-sync state (runs once per instance if DB is empty)
+// Auto-sync state
 let initialSyncPromise = null;
+let lastSyncAt = 0; // Track last successful sync time
+let autoSyncPromise = null; // Prevent concurrent auto-syncs
+const AUTO_SYNC_INTERVAL = 10 * 60 * 1000; // 10 minutes in ms
 
 // Admin token auth middleware
 const requireAdmin = (req, res, next) => {
@@ -78,6 +81,7 @@ async function ensureInitialSync() {
     initialSyncPromise = syncPosts()
       .then((result) => {
         console.log("Initial sync complete:", result);
+        lastSyncAt = Date.now(); // Update sync timestamp
       })
       .catch((err) => {
         console.error("Initial sync failed:", err.message);
@@ -86,8 +90,40 @@ async function ensureInitialSync() {
   } else {
     // DB not empty, mark as done with resolved promise
     initialSyncPromise = Promise.resolve();
+    // Set lastSyncAt to now so we don't immediately trigger auto-sync
+    lastSyncAt = Date.now();
     return initialSyncPromise;
   }
+}
+
+// Helper: trigger auto-sync if stale (non-blocking, shared promise)
+function triggerAutoSyncIfNeeded() {
+  const now = Date.now();
+  
+  // Skip if within sync interval
+  if (now - lastSyncAt < AUTO_SYNC_INTERVAL) {
+    return;
+  }
+  
+  // Skip if auto-sync already in progress
+  if (autoSyncPromise !== null) {
+    return;
+  }
+  
+  console.log(`Auto-sync triggered (${Math.round((now - lastSyncAt) / 60000)} min since last sync)`);
+  
+  // Run sync in background (non-blocking)
+  autoSyncPromise = syncPosts()
+    .then((result) => {
+      console.log("Auto-sync complete:", result);
+      lastSyncAt = Date.now();
+    })
+    .catch((err) => {
+      console.error("Auto-sync failed:", err.message);
+    })
+    .finally(() => {
+      autoSyncPromise = null; // Allow next auto-sync
+    });
 }
 
 // Health check endpoint
@@ -99,6 +135,7 @@ app.get("/api/health", (req, res) => {
 app.post("/api/sync", requireAdmin, async (req, res) => {
   try {
     const result = await syncPosts();
+    lastSyncAt = Date.now(); // Update sync timestamp
     res.json({ success: true, ...result });
   } catch (err) {
     console.error("Sync failed:", err.message);
@@ -125,6 +162,9 @@ app.get("/api/articles", async (req, res) => {
   } catch (err) {
     console.error("Error during initial sync check:", err.message);
   }
+
+  // Trigger auto-sync if data is stale (non-blocking)
+  triggerAutoSyncIfNeeded();
 
   // Get total count
   db.get("SELECT COUNT(*) as total FROM articles", (err, countResult) => {
