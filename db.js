@@ -33,6 +33,7 @@ console.log(`Using database at: ${DB_PATH}`);
 const db = new sqlite3.Database(DB_PATH);
 
 db.serialize(() => {
+  // Articles table
   db.run(`
     CREATE TABLE IF NOT EXISTS articles (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -42,7 +43,23 @@ db.serialize(() => {
       image_url TEXT,
       published_at TEXT,
       source_url TEXT,
+      source TEXT DEFAULT 'facebook',
       created_at TEXT
+    )
+  `);
+
+  // Add source column if it doesn't exist (migration)
+  db.run(`ALTER TABLE articles ADD COLUMN source TEXT DEFAULT 'facebook'`, (err) => {
+    // Ignore error if column already exists
+  });
+
+  // Admin users table
+  db.run(`
+    CREATE TABLE IF NOT EXISTS admin_users (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      username TEXT UNIQUE NOT NULL,
+      password_hash TEXT NOT NULL,
+      created_at TEXT DEFAULT CURRENT_TIMESTAMP
     )
   `);
 });

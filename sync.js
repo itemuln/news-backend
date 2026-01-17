@@ -35,7 +35,7 @@ async function syncPosts() {
       skipped++;
       continue;
     }
-
+    
     const lines = post.message
       .split("\n")
       .map((l) => l.trim())
