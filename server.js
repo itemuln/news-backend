@@ -294,13 +294,11 @@ app.delete("/api/admin/articles/:id", requireAuth, (req, res) => {
   });
 });
 
-// ===== Setup Route (ONE-TIME USE - REMOVE AFTER CREATING ADMIN) =====
-// Usage: POST /api/setup with { "setupKey": "YOUR_ADMIN_TOKEN", "username": "admin", "password": "admin123" }
-app.post("/api/setup", async (req, res) => {
+// Setup endpoint - create admin user (protected by ADMIN_TOKEN)
+app.post("/api/setup-admin", async (req, res) => {
   const { setupKey, username, password } = req.body;
   
-  // Use ADMIN_TOKEN as setup key for security
-  if (setupKey !== process.env.ADMIN_TOKEN) {
+  if (!process.env.ADMIN_TOKEN || setupKey !== process.env.ADMIN_TOKEN) {
     return res.status(401).json({ error: "Invalid setup key" });
   }
   
@@ -308,25 +306,21 @@ app.post("/api/setup", async (req, res) => {
     return res.status(400).json({ error: "Username and password required" });
   }
   
-  try {
-    const passwordHash = await bcrypt.hash(password, 10);
-    
-    db.run(
-      "INSERT INTO admin_users (username, password_hash) VALUES (?, ?)",
-      [username, passwordHash],
-      function (err) {
-        if (err) {
-          if (err.message.includes("UNIQUE constraint failed")) {
-            return res.status(400).json({ error: "Username already exists" });
-          }
-          return res.status(500).json({ error: "Database error" });
+  const passwordHash = await bcrypt.hash(password, 10);
+  
+  db.run(
+    "INSERT INTO admin_users (username, password_hash) VALUES (?, ?)",
+    [username, passwordHash],
+    function (err) {
+      if (err) {
+        if (err.message.includes("UNIQUE")) {
+          return res.status(400).json({ error: "Username already exists" });
         }
-        res.json({ success: true, message: `Admin '${username}' created!` });
+        return res.status(500).json({ error: "Database error" });
       }
-    );
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
+      res.json({ success: true, message: `Admin '${username}' created!` });
+    }
+  );
 });
 
 // ===== Start Server =====
