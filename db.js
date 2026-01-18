@@ -62,6 +62,22 @@ db.serialize(() => {
       created_at TEXT DEFAULT CURRENT_TIMESTAMP
     )
   `);
+
+  // Auto-create default admin if none exists
+  db.get("SELECT COUNT(*) as count FROM admin_users", (err, row) => {
+    if (err) return;
+    if (row.count === 0 && process.env.DEFAULT_ADMIN_PASS) {
+      const bcrypt = require("bcryptjs");
+      const hash = bcrypt.hashSync(process.env.DEFAULT_ADMIN_PASS, 10);
+      db.run(
+        "INSERT INTO admin_users (username, password_hash) VALUES (?, ?)",
+        ["admin", hash],
+        (err) => {
+          if (!err) console.log("Default admin user created automatically");
+        }
+      );
+    }
+  });
 });
 
 module.exports = db;
