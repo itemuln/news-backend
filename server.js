@@ -25,7 +25,7 @@ app.use(
     },
   })
 );
-app.use(express.json());
+app.use(express.json({ limit: "10mb" }));
 
 // ===== Middleware =====
 
@@ -63,17 +63,34 @@ app.get("/api/health", async (req, res) => {
   });
 });
 
+// Get featured articles for carousel (admin-controlled, NOT by recency)
+app.get("/api/articles/featured", async (req, res) => {
+  try {
+    const { data, error } = await supabase
+      .from("articles")
+      .select("id, fb_post_id, headline, image_url, published_at, source")
+      .eq("is_hidden", false)
+      .eq("is_featured", true)
+      .order("featured_position", { ascending: true })
+      .limit(10);
+
+    if (error) throw error;
+    res.json(data || []);
+  } catch (err) {
+    console.error("Error fetching featured:", err);
+    res.status(500).json({ error: "Database error" });
+  }
+});
+
 // Get all articles (with pagination) - triggers lazy sync
 app.get("/api/articles", async (req, res) => {
   const page = parseInt(req.query.page) || 1;
   const limit = parseInt(req.query.limit) || 10;
   const offset = (page - 1) * limit;
 
-  // Trigger lazy sync in background
   lazySync();
 
   try {
-    // Get total count
     const { count, error: countError } = await supabase
       .from("articles")
       .select("*", { count: "exact", head: true })
@@ -84,10 +101,9 @@ app.get("/api/articles", async (req, res) => {
     const total = count || 0;
     const totalPages = Math.ceil(total / limit);
 
-    // Get articles
     const { data, error } = await supabase
       .from("articles")
-      .select("id, fb_post_id, headline, image_url, published_at, source, is_modified")
+      .select("id, fb_post_id, headline, image_url, published_at, source, is_modified, is_featured")
       .eq("is_hidden", false)
       .order("published_at", { ascending: false })
       .range(offset, offset + limit - 1);
@@ -101,39 +117,54 @@ app.get("/api/articles", async (req, res) => {
   }
 });
 
-// Get single article by fb_post_id
+// Get single article by fb_post_id (with media)
 app.get("/api/articles/by-fb/:fb_post_id", async (req, res) => {
   try {
-    const { data, error } = await supabase
+    const { data: article, error } = await supabase
       .from("articles")
       .select("*")
       .eq("fb_post_id", req.params.fb_post_id)
       .eq("is_hidden", false)
       .single();
 
-    if (error || !data) {
+    if (error || !article) {
       return res.status(404).json({ error: "Not found" });
     }
-    res.json(data);
+
+    // Get associated media
+    const { data: media } = await supabase
+      .from("article_media")
+      .select("*")
+      .eq("article_id", article.id)
+      .order("position", { ascending: true });
+
+    res.json({ ...article, media: media || [] });
   } catch (err) {
     res.status(500).json({ error: "Database error" });
   }
 });
 
-// Get single article by ID
+// Get single article by ID (with media)
 app.get("/api/articles/:id", async (req, res) => {
   try {
-    const { data, error } = await supabase
+    const { data: article, error } = await supabase
       .from("articles")
       .select("*")
       .eq("id", req.params.id)
       .eq("is_hidden", false)
       .single();
 
-    if (error || !data) {
+    if (error || !article) {
       return res.status(404).json({ error: "Not found" });
     }
-    res.json(data);
+
+    const { data: media } = await supabase
+      .from("article_media")
+      .select("*")
+      .eq("article_id", article.id)
+      .order("position", { ascending: true });
+
+    res.json({ ...article, media: media || [] });
   } catch (err) {
     res.status(500).json({ error: "Database error" });
   }
@@ -191,7 +222,7 @@ app.get("/api/admin/verify", requireAuth, (req, res) => {
   res.json({ valid: true, user: req.user });
 });
 
-// ===== Admin CRUD Routes =====
+// ===== Admin Article CRUD =====
 
 app.get("/api/admin/articles", requireAuth, async (req, res) => {
   const page = parseInt(req.query.page) || 1;
@@ -222,7 +253,7 @@ app.get("/api/admin/articles", requireAuth, async (req, res) => {
 
 // Create article
 app.post("/api/admin/articles", requireAuth, async (req, res) => {
-  const { headline, body, image_url } = req.body;
+  const { headline, body, image_url, is_featured, featured_position } = req.body;
 
   if (!headline) {
     return res.status(400).json({ error: "Headline is required" });
@@ -243,6 +274,8 @@ app.post("/api/admin/articles", requireAuth, async (req, res) => {
         source: "admin",
         is_modified: true,
         is_hidden: false,
+        is_featured: is_featured || false,
+        featured_position: featured_position || 0,
         created_at: now,
       })
       .select()
@@ -257,9 +290,9 @@ app.post("/api/admin/articles", requireAuth, async (req, res) => {
   }
 });
 
-// Update article
+// Update article (sets is_modified = true)
 app.put("/api/admin/articles/:id", requireAuth, async (req, res) => {
-  const { headline, body, image_url } = req.body;
+  const { headline, body, image_url, banner_media_id, is_featured, featured_position } = req.body;
   const { id } = req.params;
 
   if (!headline) {
@@ -267,12 +300,45 @@ app.put("/api/admin/articles/:id", requireAuth, async (req, res) => {
   }
 
   try {
+    const updateData = {
+      headline,
+      body: body || "",
+      image_url: image_url || null,
+      is_modified: true,
+    };
+
+    if (banner_media_id !== undefined) updateData.banner_media_id = banner_media_id;
+    if (is_featured !== undefined) updateData.is_featured = is_featured;
+    if (featured_position !== undefined) updateData.featured_position = featured_position;
+
+    const { data, error } = await supabase
+      .from("articles")
+      .update(updateData)
+      .eq("id", id)
+      .select()
+      .single();
+
+    if (error || !data) {
+      return res.status(404).json({ error: "Article not found" });
+    }
+
+    res.json({ success: true, data });
+  } catch (err) {
+    res.status(500).json({ error: "Database error" });
+  }
+});
+
+// Toggle featured status
+app.patch("/api/admin/articles/:id/featured", requireAuth, async (req, res) => {
+  const { id } = req.params;
+  const { is_featured, featured_position } = req.body;
+
+  try {
     const { data, error } = await supabase
       .from("articles")
       .update({
-        headline,
-        body: body || "",
-        image_url: image_url || null,
+        is_featured: !!is_featured,
+        featured_position: featured_position || 0,
         is_modified: true,
       })
       .eq("id", id)
@@ -283,7 +349,7 @@ app.put("/api/admin/articles/:id", requireAuth, async (req, res) => {
       return res.status(404).json({ error: "Article not found" });
     }
 
-    res.json({ success: true, is_modified: true });
+    res.json({ success: true, is_featured: data.is_featured, featured_position: data.featured_position });
   } catch (err) {
     res.status(500).json({ error: "Database error" });
   }
@@ -297,7 +363,7 @@ app.patch("/api/admin/articles/:id/visibility", requireAuth, async (req, res) =>
   try {
     const { data, error } = await supabase
       .from("articles")
-      .update({ is_hidden: !!is_hidden })
+      .update({ is_hidden: !!is_hidden, is_modified: true })
       .eq("id", id)
       .select()
       .single();
@@ -317,12 +383,174 @@ app.delete("/api/admin/articles/:id", requireAuth, async (req, res) => {
   const { id } = req.params;
 
   try {
-    const { error } = await supabase
-      .from("articles")
-      .delete()
-      .eq("id", id);
+    // Delete associated media first
+    await supabase.from("article_media").delete().eq("article_id", id);
+
+    const { error } = await supabase.from("articles").delete().eq("id", id);
 
     if (error) throw error;
+
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: "Database error" });
+  }
+});
+
+// ===== Admin Media Routes =====
+
+// Get media for an article
+app.get("/api/admin/articles/:id/media", requireAuth, async (req, res) => {
+  try {
+    const { data, error } = await supabase
+      .from("article_media")
+      .select("*")
+      .eq("article_id", req.params.id)
+      .order("position", { ascending: true });
+
+    if (error) throw error;
+    res.json(data || []);
+  } catch (err) {
+    res.status(500).json({ error: "Database error" });
+  }
+});
+
+// Add media to article (by URL)
+app.post("/api/admin/articles/:id/media", requireAuth, async (req, res) => {
+  const { url, media_type, alt_text, position } = req.body;
+  const article_id = parseInt(req.params.id);
+
+  if (!url) {
+    return res.status(400).json({ error: "URL is required" });
+  }
+
+  try {
+    // Mark article as modified
+    await supabase.from("articles").update({ is_modified: true }).eq("id", article_id);
+
+    const { data, error } = await supabase
+      .from("article_media")
+      .insert({
+        article_id,
+        url,
+        media_type: media_type || "image",
+        alt_text: alt_text || null,
+        position: position || 0,
+      })
+      .select()
+      .single();
+
+    if (error) throw error;
+
+    res.status(201).json(data);
+  } catch (err) {
+    console.error("Media insert error:", err);
+    res.status(500).json({ error: "Database error" });
+  }
+});
+
+// Update media
+app.put("/api/admin/media/:id", requireAuth, async (req, res) => {
+  const { url, media_type, alt_text, position } = req.body;
+  const { id } = req.params;
+
+  try {
+    // Get article_id first to mark as modified
+    const { data: media } = await supabase
+      .from("article_media")
+      .select("article_id")
+      .eq("id", id)
+      .single();
+
+    if (media?.article_id) {
+      await supabase.from("articles").update({ is_modified: true }).eq("id", media.article_id);
+    }
+
+    const { data, error } = await supabase
+      .from("article_media")
+      .update({
+        url: url || undefined,
+        media_type: media_type || undefined,
+        alt_text: alt_text || undefined,
+        position: position !== undefined ? position : undefined,
+      })
+      .eq("id", id)
+      .select()
+      .single();
+
+    if (error || !data) {
+      return res.status(404).json({ error: "Media not found" });
+    }
+
+    res.json(data);
+  } catch (err) {
+    res.status(500).json({ error: "Database error" });
+  }
+});
+
+// Delete media
+app.delete("/api/admin/media/:id", requireAuth, async (req, res) => {
+  const { id } = req.params;
+
+  try {
+    // Get article_id first to mark as modified
+    const { data: media } = await supabase
+      .from("article_media")
+      .select("article_id")
+      .eq("id", id)
+      .single();
+
+    if (media?.article_id) {
+      await supabase.from("articles").update({ is_modified: true }).eq("id", media.article_id);
+    }
+
+    const { error } = await supabase.from("article_media").delete().eq("id", id);
+
+    if (error) throw error;
+
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: "Database error" });
+  }
+});
+
+// Set banner media for article
+app.patch("/api/admin/articles/:id/banner", requireAuth, async (req, res) => {
+  const { id } = req.params;
+  const { banner_media_id } = req.body;
+
+  try {
+    const { data, error } = await supabase
+      .from("articles")
+      .update({ banner_media_id, is_modified: true })
+      .eq("id", id)
+      .select()
+      .single();
+
+    if (error || !data) {
+      return res.status(404).json({ error: "Article not found" });
+    }
+
+    res.json({ success: true, banner_media_id: data.banner_media_id });
+  } catch (err) {
+    res.status(500).json({ error: "Database error" });
+  }
+});
+
+// Bulk update featured positions
+app.post("/api/admin/articles/featured/reorder", requireAuth, async (req, res) => {
+  const { items } = req.body; // Array of { id, featured_position }
+
+  if (!Array.isArray(items)) {
+    return res.status(400).json({ error: "Items array required" });
+  }
+
+  try {
+    for (const item of items) {
+      await supabase
+        .from("articles")
+        .update({ featured_position: item.featured_position, is_modified: true })
+        .eq("id", item.id);
+    }
 
     res.json({ success: true });
   } catch (err) {
