@@ -3,10 +3,25 @@ const express = require("express");
 const cors = require("cors");
 const jwt = require("jsonwebtoken");
 const bcrypt = require("bcryptjs");
+const multer = require("multer");
 const supabase = require("./supabase");
 const { syncPosts, lazySync, getLastSyncTime } = require("./sync");
 
 const app = express();
+
+// Configure multer for file uploads (in memory)
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 10 * 1024 * 1024 }, // 10MB max
+  fileFilter: (req, file, cb) => {
+    const allowed = ["image/jpeg", "image/png", "image/gif", "image/webp", "video/mp4", "video/webm"];
+    if (allowed.includes(file.mimetype)) {
+      cb(null, true);
+    } else {
+      cb(new Error("Invalid file type"), false);
+    }
+  },
+});
 
 const JWT_SECRET = process.env.JWT_SECRET || "your-secret-key-change-in-production";
 
@@ -417,7 +432,7 @@ app.get("/api/admin/articles/:id/media", requireAuth, async (req, res) => {
 // Add media to article (by URL)
 app.post("/api/admin/articles/:id/media", requireAuth, async (req, res) => {
   const { url, media_type, alt_text, position } = req.body;
-  const article_id = parseInt(req.params.id);
+  const article_id = req.params.id; // UUID string, not parseInt
 
   if (!url) {
     return res.status(400).json({ error: "URL is required" });
@@ -510,6 +525,65 @@ app.delete("/api/admin/media/:id", requireAuth, async (req, res) => {
     res.json({ success: true });
   } catch (err) {
     res.status(500).json({ error: "Database error" });
+  }
+});
+
+// Upload media file to Supabase Storage
+app.post("/api/admin/articles/:id/upload", requireAuth, upload.single("file"), async (req, res) => {
+  const article_id = req.params.id;
+  const { alt_text, position } = req.body;
+
+  if (!req.file) {
+    return res.status(400).json({ error: "No file uploaded" });
+  }
+
+  try {
+    // Generate unique filename
+    const ext = req.file.originalname.split(".").pop();
+    const filename = `${article_id}/${Date.now()}-${Math.random().toString(36).substring(7)}.${ext}`;
+
+    // Upload to Supabase Storage
+    const { data: uploadData, error: uploadError } = await supabase.storage
+      .from("article-media")
+      .upload(filename, req.file.buffer, {
+        contentType: req.file.mimetype,
+        cacheControl: "3600",
+      });
+
+    if (uploadError) {
+      console.error("Upload error:", uploadError);
+      return res.status(500).json({ error: "Failed to upload file" });
+    }
+
+    // Get public URL
+    const { data: urlData } = supabase.storage.from("article-media").getPublicUrl(filename);
+    const url = urlData.publicUrl;
+
+    // Determine media type
+    const media_type = req.file.mimetype.startsWith("video/") ? "video" : "image";
+
+    // Mark article as modified
+    await supabase.from("articles").update({ is_modified: true }).eq("id", article_id);
+
+    // Insert media record
+    const { data, error } = await supabase
+      .from("article_media")
+      .insert({
+        article_id,
+        url,
+        media_type,
+        alt_text: alt_text || null,
+        position: parseInt(position) || 0,
+      })
+      .select()
+      .single();
+
+    if (error) throw error;
+
+    res.status(201).json(data);
+  } catch (err) {
+    console.error("Media upload error:", err);
+    res.status(500).json({ error: "Failed to save media" });
   }
 });
 

@@ -37,13 +37,14 @@ async function shouldSync() {
 }
 
 /**
- * Get existing fb_post_ids to skip
+ * Get existing fb_post_ids to skip (including modified ones)
  */
 async function getExistingPostIds() {
+  // Get ALL existing fb_post_ids - we never update, only insert new
   const { data, error } = await supabase
     .from("articles")
-    .select("fb_post_id")
-    .eq("source", "facebook");
+    .select("fb_post_id, is_modified")
+    .not("fb_post_id", "is", null);
 
   if (error) throw error;
   return new Set(data.map((r) => r.fb_post_id));
