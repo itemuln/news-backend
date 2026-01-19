@@ -5,17 +5,8 @@ const path = require("path");
 
 // Determine database path
 function getDbPath() {
-  // 1. If DB_PATH is set, use it
-  if (process.env.DB_PATH) {
-    return process.env.DB_PATH;
-  }
-  
-  // 2. If /var/data exists (Render persistent disk), use it
-  if (fs.existsSync("/var/data")) {
-    return "/var/data/news.db";
-  }
-  
-  // 3. Fallback to local
+  if (process.env.DB_PATH) return process.env.DB_PATH;
+  if (fs.existsSync("/var/data")) return "/var/data/news.db";
   return "./news.db";
 }
 
@@ -33,7 +24,7 @@ console.log(`Using database at: ${DB_PATH}`);
 const db = new sqlite3.Database(DB_PATH);
 
 db.serialize(() => {
-  // Articles table
+  // Articles table with all columns
   db.run(`
     CREATE TABLE IF NOT EXISTS articles (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -44,14 +35,30 @@ db.serialize(() => {
       published_at TEXT,
       source_url TEXT,
       source TEXT DEFAULT 'facebook',
+      is_modified INTEGER DEFAULT 0,
+      is_hidden INTEGER DEFAULT 0,
       created_at TEXT
     )
   `);
 
-  // Add source column if it doesn't exist (migration)
-  db.run(`ALTER TABLE articles ADD COLUMN source TEXT DEFAULT 'facebook'`, (err) => {
-    // Ignore error if column already exists
+  // Migrations for existing databases
+  const migrations = [
+    "ALTER TABLE articles ADD COLUMN source TEXT DEFAULT 'facebook'",
+    "ALTER TABLE articles ADD COLUMN is_modified INTEGER DEFAULT 0",
+    "ALTER TABLE articles ADD COLUMN is_hidden INTEGER DEFAULT 0",
+  ];
+  
+  migrations.forEach((sql) => {
+    db.run(sql, () => {}); // Ignore errors if column exists
   });
+
+  // Sync metadata table - tracks last sync time
+  db.run(`
+    CREATE TABLE IF NOT EXISTS sync_meta (
+      key TEXT PRIMARY KEY,
+      value TEXT
+    )
+  `);
 
   // Admin users table
   db.run(`

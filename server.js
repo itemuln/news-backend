@@ -4,7 +4,7 @@ const cors = require("cors");
 const jwt = require("jsonwebtoken");
 const bcrypt = require("bcryptjs");
 const db = require("./db");
-const { syncPosts } = require("./sync");
+const { syncPosts, lazySync, getLastSyncTime } = require("./sync");
 
 const app = express();
 
@@ -28,12 +28,6 @@ app.use(
   })
 );
 app.use(express.json());
-
-// ===== Auto-sync state =====
-let initialSyncPromise = null;
-let lastSyncAt = 0;
-let autoSyncPromise = null;
-const AUTO_SYNC_INTERVAL = 10 * 60 * 1000;
 
 // ===== Middleware =====
 
@@ -63,77 +57,36 @@ const requireAuth = (req, res, next) => {
   }
 };
 
-// ===== Helper functions =====
-
-async function ensureInitialSync() {
-  if (initialSyncPromise !== null) return initialSyncPromise;
-
-  const countCheck = await new Promise((resolve, reject) => {
-    db.get("SELECT COUNT(*) as total FROM articles", (err, row) => {
-      if (err) reject(err);
-      else resolve(row);
-    });
-  });
-
-  if (countCheck.total === 0) {
-    console.log("Database empty, running initial sync...");
-    initialSyncPromise = syncPosts()
-      .then((result) => {
-        console.log("Initial sync complete:", result);
-        lastSyncAt = Date.now();
-      })
-      .catch((err) => console.error("Initial sync failed:", err.message));
-    return initialSyncPromise;
-  } else {
-    initialSyncPromise = Promise.resolve();
-    lastSyncAt = Date.now();
-    return initialSyncPromise;
-  }
-}
-
-function triggerAutoSyncIfNeeded() {
-  const now = Date.now();
-  if (now - lastSyncAt < AUTO_SYNC_INTERVAL) return;
-  if (autoSyncPromise !== null) return;
-  
-  console.log(`Auto-sync triggered (${Math.round((now - lastSyncAt) / 60000)} min since last sync)`);
-  autoSyncPromise = syncPosts()
-    .then((result) => {
-      console.log("Auto-sync complete:", result);
-      lastSyncAt = Date.now();
-    })
-    .catch((err) => console.error("Auto-sync failed:", err.message))
-    .finally(() => { autoSyncPromise = null; });
-}
-
 // ===== Public Routes =====
 
-app.get("/api/health", (req, res) => {
-  res.json({ status: "ok", timestamp: new Date().toISOString() });
+app.get("/api/health", async (req, res) => {
+  const lastSync = await getLastSyncTime();
+  res.json({ 
+    status: "ok", 
+    timestamp: new Date().toISOString(),
+    lastSync: lastSync ? new Date(lastSync).toISOString() : null
+  });
 });
 
-// Get all articles (with pagination)
+// Get all articles (with pagination) - triggers lazy sync
 app.get("/api/articles", async (req, res) => {
   const page = parseInt(req.query.page) || 1;
   const limit = parseInt(req.query.limit) || 10;
   const offset = (page - 1) * limit;
 
-  try {
-    await ensureInitialSync();
-  } catch (err) {
-    console.error("Error during initial sync check:", err.message);
-  }
+  // Trigger lazy sync in background (non-blocking)
+  lazySync();
 
-  triggerAutoSyncIfNeeded();
-
-  db.get("SELECT COUNT(*) as total FROM articles", (err, countResult) => {
+  db.get("SELECT COUNT(*) as total FROM articles WHERE is_hidden = 0", (err, countResult) => {
     if (err) return res.status(500).json({ error: "Database error" });
 
     const total = countResult.total;
     const totalPages = Math.ceil(total / limit);
 
     db.all(
-      "SELECT id, fb_post_id, headline, image_url, published_at, source FROM articles ORDER BY published_at DESC LIMIT ? OFFSET ?",
+      `SELECT id, fb_post_id, headline, image_url, published_at, source, is_modified 
+       FROM articles WHERE is_hidden = 0 
+       ORDER BY published_at DESC LIMIT ? OFFSET ?`,
       [limit, offset],
       (err, rows) => {
         if (err) return res.status(500).json({ error: "Database error" });
@@ -145,7 +98,7 @@ app.get("/api/articles", async (req, res) => {
 
 // Get single article by fb_post_id
 app.get("/api/articles/by-fb/:fb_post_id", (req, res) => {
-  db.get("SELECT * FROM articles WHERE fb_post_id = ?", [req.params.fb_post_id], (err, row) => {
+  db.get("SELECT * FROM articles WHERE fb_post_id = ? AND is_hidden = 0", [req.params.fb_post_id], (err, row) => {
     if (err) return res.status(500).json({ error: "Database error" });
     if (!row) return res.status(404).json({ error: "Not found" });
     res.json(row);
@@ -154,7 +107,7 @@ app.get("/api/articles/by-fb/:fb_post_id", (req, res) => {
 
 // Get single article by ID
 app.get("/api/articles/:id", (req, res) => {
-  db.get("SELECT * FROM articles WHERE id = ?", [req.params.id], (err, row) => {
+  db.get("SELECT * FROM articles WHERE id = ? AND is_hidden = 0", [req.params.id], (err, row) => {
     if (err) return res.status(500).json({ error: "Database error" });
     if (!row) return res.status(404).json({ error: "Not found" });
     res.json(row);
@@ -164,8 +117,7 @@ app.get("/api/articles/:id", (req, res) => {
 // Manual sync endpoint (protected by legacy token)
 app.post("/api/sync", requireAdminToken, async (req, res) => {
   try {
-    const result = await syncPosts();
-    lastSyncAt = Date.now();
+    const result = await syncPosts(true); // force sync
     res.json({ success: true, ...result });
   } catch (err) {
     console.error("Sync failed:", err.message);
@@ -207,7 +159,7 @@ app.get("/api/admin/verify", requireAuth, (req, res) => {
 
 // ===== Admin CRUD Routes =====
 
-// Get all articles for admin (with more details)
+// Get all articles for admin (with more details, including hidden)
 app.get("/api/admin/articles", requireAuth, (req, res) => {
   const page = parseInt(req.query.page) || 1;
   const limit = parseInt(req.query.limit) || 20;
@@ -230,7 +182,7 @@ app.get("/api/admin/articles", requireAuth, (req, res) => {
   });
 });
 
-// Create article
+// Create article (admin-created)
 app.post("/api/admin/articles", requireAuth, (req, res) => {
   const { headline, body, image_url } = req.body;
 
@@ -242,8 +194,8 @@ app.post("/api/admin/articles", requireAuth, (req, res) => {
   const adminPostId = `admin_${Date.now()}`;
 
   db.run(
-    `INSERT INTO articles (fb_post_id, headline, body, image_url, published_at, source, created_at)
-     VALUES (?, ?, ?, ?, ?, 'admin', ?)`,
+    `INSERT INTO articles (fb_post_id, headline, body, image_url, published_at, source, is_modified, is_hidden, created_at)
+     VALUES (?, ?, ?, ?, ?, 'admin', 1, 0, ?)`,
     [adminPostId, headline, body || "", image_url || null, now, now],
     function (err) {
       if (err) {
@@ -258,12 +210,13 @@ app.post("/api/admin/articles", requireAuth, (req, res) => {
         image_url,
         published_at: now,
         source: "admin",
+        is_modified: 1,
       });
     }
   );
 });
 
-// Update article
+// Update article (sets is_modified = 1 to protect from sync overwrite)
 app.put("/api/admin/articles/:id", requireAuth, (req, res) => {
   const { headline, body, image_url } = req.body;
   const { id } = req.params;
@@ -273,12 +226,28 @@ app.put("/api/admin/articles/:id", requireAuth, (req, res) => {
   }
 
   db.run(
-    "UPDATE articles SET headline = ?, body = ?, image_url = ? WHERE id = ?",
+    "UPDATE articles SET headline = ?, body = ?, image_url = ?, is_modified = 1 WHERE id = ?",
     [headline, body || "", image_url || null, id],
     function (err) {
       if (err) return res.status(500).json({ error: "Database error" });
       if (this.changes === 0) return res.status(404).json({ error: "Article not found" });
-      res.json({ success: true });
+      res.json({ success: true, is_modified: 1 });
+    }
+  );
+});
+
+// Toggle article visibility (hide/show)
+app.patch("/api/admin/articles/:id/visibility", requireAuth, (req, res) => {
+  const { id } = req.params;
+  const { is_hidden } = req.body;
+
+  db.run(
+    "UPDATE articles SET is_hidden = ? WHERE id = ?",
+    [is_hidden ? 1 : 0, id],
+    function (err) {
+      if (err) return res.status(500).json({ error: "Database error" });
+      if (this.changes === 0) return res.status(404).json({ error: "Article not found" });
+      res.json({ success: true, is_hidden: is_hidden ? 1 : 0 });
     }
   );
 });
