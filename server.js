@@ -97,6 +97,179 @@ app.get("/api/articles/featured", async (req, res) => {
   }
 });
 
+// ===== Standalone Banners =====
+
+// Get all banners (public)
+app.get("/api/banners", async (req, res) => {
+  try {
+    const { data, error } = await supabase
+      .from("banners")
+      .select("*")
+      .eq("is_active", true)
+      .order("position", { ascending: true });
+
+    if (error) throw error;
+    res.json(data || []);
+  } catch (err) {
+    console.error("Error fetching banners:", err);
+    res.status(500).json({ error: "Database error" });
+  }
+});
+
+// Admin: Get all banners (including inactive)
+app.get("/api/admin/banners", requireAuth, async (req, res) => {
+  try {
+    const { data, error } = await supabase
+      .from("banners")
+      .select("*")
+      .order("position", { ascending: true });
+
+    if (error) throw error;
+    res.json(data || []);
+  } catch (err) {
+    res.status(500).json({ error: "Database error" });
+  }
+});
+
+// Admin: Add banner by URL
+app.post("/api/admin/banners", requireAuth, async (req, res) => {
+  const { url, title, link_url, position } = req.body;
+
+  if (!url) {
+    return res.status(400).json({ error: "URL is required" });
+  }
+
+  try {
+    const { data, error } = await supabase
+      .from("banners")
+      .insert({
+        url,
+        title: title || null,
+        link_url: link_url || null,
+        position: position || 0,
+        is_active: true,
+      })
+      .select()
+      .single();
+
+    if (error) throw error;
+    res.status(201).json(data);
+  } catch (err) {
+    console.error("Banner insert error:", err);
+    res.status(500).json({ error: "Database error" });
+  }
+});
+
+// Admin: Upload banner file
+app.post("/api/admin/banners/upload", requireAuth, upload.single("file"), async (req, res) => {
+  const { title, link_url, position } = req.body;
+
+  if (!req.file) {
+    return res.status(400).json({ error: "No file uploaded" });
+  }
+
+  try {
+    // Generate unique filename
+    const ext = req.file.originalname.split(".").pop();
+    const filename = `banners/${Date.now()}-${Math.random().toString(36).substring(7)}.${ext}`;
+
+    // Upload to Supabase Storage
+    const { error: uploadError } = await supabase.storage
+      .from("article-media")
+      .upload(filename, req.file.buffer, {
+        contentType: req.file.mimetype,
+        cacheControl: "3600",
+      });
+
+    if (uploadError) {
+      console.error("Upload error:", uploadError);
+      return res.status(500).json({ error: "Failed to upload file" });
+    }
+
+    // Get public URL
+    const { data: urlData } = supabase.storage.from("article-media").getPublicUrl(filename);
+    const url = urlData.publicUrl;
+
+    // Insert banner record
+    const { data, error } = await supabase
+      .from("banners")
+      .insert({
+        url,
+        title: title || null,
+        link_url: link_url || null,
+        position: parseInt(position) || 0,
+        is_active: true,
+      })
+      .select()
+      .single();
+
+    if (error) throw error;
+    res.status(201).json(data);
+  } catch (err) {
+    console.error("Banner upload error:", err);
+    res.status(500).json({ error: "Failed to save banner" });
+  }
+});
+
+// Admin: Update banner
+app.put("/api/admin/banners/:id", requireAuth, async (req, res) => {
+  const { id } = req.params;
+  const { title, link_url, position, is_active } = req.body;
+
+  try {
+    const { data, error } = await supabase
+      .from("banners")
+      .update({
+        title: title !== undefined ? title : undefined,
+        link_url: link_url !== undefined ? link_url : undefined,
+        position: position !== undefined ? position : undefined,
+        is_active: is_active !== undefined ? is_active : undefined,
+      })
+      .eq("id", id)
+      .select()
+      .single();
+
+    if (error || !data) {
+      return res.status(404).json({ error: "Banner not found" });
+    }
+
+    res.json(data);
+  } catch (err) {
+    res.status(500).json({ error: "Database error" });
+  }
+});
+
+// Admin: Delete banner
+app.delete("/api/admin/banners/:id", requireAuth, async (req, res) => {
+  const { id } = req.params;
+
+  try {
+    const { error } = await supabase.from("banners").delete().eq("id", id);
+    if (error) throw error;
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: "Database error" });
+  }
+});
+
+// Admin: Reorder banners
+app.post("/api/admin/banners/reorder", requireAuth, async (req, res) => {
+  const { items } = req.body; // Array of { id, position }
+
+  if (!Array.isArray(items)) {
+    return res.status(400).json({ error: "Items array required" });
+  }
+
+  try {
+    for (const item of items) {
+      await supabase.from("banners").update({ position: item.position }).eq("id", item.id);
+    }
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: "Database error" });
+  }
+});
+
 // Get all articles (with pagination) - triggers lazy sync
 app.get("/api/articles", async (req, res) => {
   const page = parseInt(req.query.page) || 1;

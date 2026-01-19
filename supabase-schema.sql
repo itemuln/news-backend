@@ -21,3 +21,17 @@ ALTER TABLE articles ADD COLUMN IF NOT EXISTS featured_position INTEGER DEFAULT 
 -- Create indexes
 CREATE INDEX IF NOT EXISTS idx_articles_is_featured ON articles(is_featured);
 CREATE INDEX IF NOT EXISTS idx_articles_featured_position ON articles(featured_position);
+
+-- Standalone banners table (for carousel - independent of articles)
+CREATE TABLE IF NOT EXISTS banners (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  url TEXT NOT NULL,
+  title TEXT,
+  link_url TEXT,
+  position INTEGER DEFAULT 0,
+  is_active BOOLEAN DEFAULT TRUE,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_banners_position ON banners(position);
+CREATE INDEX IF NOT EXISTS idx_banners_is_active ON banners(is_active);
